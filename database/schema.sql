@@ -213,3 +213,400 @@ CREATE TABLE notifications (
             'new_rating'
         ))
 );
+--İndexler
+-- 1. USER_SKILLS
+CREATE INDEX idx_user_skills_skill
+ON user_skills (skill_id);
+
+-- 2. PROJECTS
+CREATE INDEX idx_projects_captain
+ON projects (captain_id);
+
+CREATE INDEX idx_projects_status
+ON projects (status);
+
+-- 3. PROJECT_SKILLS
+CREATE INDEX idx_project_skills_skill
+ON project_skills (skill_id, skill_type);
+
+-- 4. PROJECT_MEMBERS
+CREATE INDEX idx_project_members_user
+ON project_members (user_id);
+
+-- 5. CONNECTIONS
+CREATE INDEX idx_connections_sender
+ON connections (sender_id);
+
+CREATE INDEX idx_connections_receiver
+ON connections (receiver_id, status);
+
+CREATE INDEX idx_connections_project
+ON connections (project_id);
+
+-- 6. RATINGS
+CREATE INDEX idx_ratings_rated
+ON ratings (rated_user_id);
+
+CREATE INDEX idx_ratings_project
+ON ratings (project_id);
+
+-- 7. PROJECT_REVIEWS
+CREATE INDEX idx_project_reviews_reviewer
+ON project_reviews (reviewer_id);
+
+-- 8. NOTIFICATIONS
+CREATE INDEX idx_notifications_unread
+ON notifications (user_id)
+WHERE is_read = FALSE;
+
+--triggers
+-- 1. PROJECTS UPDATED_AT avtomatik yenilənməsi
+CREATE FUNCTION fn_set_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at := now();
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_projects_updated_at
+BEFORE UPDATE ON projects
+FOR EACH ROW
+EXECUTE FUNCTION fn_set_updated_at();
+
+
+-- 2. Layihə kapitanının avtomatik üzv əlavə edilməsi
+CREATE FUNCTION fn_add_captain_as_member()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO project_members
+        (project_id, user_id, member_role, joined_at)
+    VALUES
+        (NEW.project_id, NEW.captain_id, 'captain', NEW.created_at)
+    ON CONFLICT (project_id, user_id) DO NOTHING;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_projects_add_captain
+AFTER INSERT ON projects
+FOR EACH ROW
+EXECUTE FUNCTION fn_add_captain_as_member();
+
+
+-- 3. Reytinq üçün qəbul edilmiş bağlantının yoxlanması
+CREATE FUNCTION fn_check_rating_connection()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM connections c
+        WHERE c.status = 'accepted'
+          AND (
+              (c.sender_id = NEW.rater_id
+               AND c.receiver_id = NEW.rated_user_id)
+              OR
+              (c.sender_id = NEW.rated_user_id
+               AND c.receiver_id = NEW.rater_id)
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'Rating rejected: users % and % have no accepted connection',
+            NEW.rater_id, NEW.rated_user_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_ratings_require_connection
+BEFORE INSERT ON ratings
+FOR EACH ROW
+EXECUTE FUNCTION fn_check_rating_connection();
+
+
+-- 4. Connection status dəyişikliklərinin idarə edilməsi
+CREATE FUNCTION fn_connection_status_guard()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.status <> 'pending' AND NEW.status <> OLD.status THEN
+        RAISE EXCEPTION
+            'Connection % already answered (%); status cannot be changed',
+            OLD.connection_id, OLD.status
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF OLD.status = 'pending'
+       AND NEW.status <> 'pending'
+       AND NEW.responded_at IS NULL THEN
+        NEW.responded_at := now();
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_connections_status_guard
+BEFORE UPDATE OF status ON connections
+FOR EACH ROW
+EXECUTE FUNCTION fn_connection_status_guard();
+
+-- 5.1 Connection bildirişləri
+CREATE FUNCTION fn_notify_connection()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_name TEXT;
+BEGIN
+    IF TG_OP = 'INSERT' AND NEW.status = 'pending' THEN
+        SELECT first_name || ' ' || last_name
+        INTO v_name
+        FROM users
+        WHERE user_id = NEW.sender_id;
+
+        INSERT INTO notifications (user_id, type, content)
+        VALUES (
+            NEW.receiver_id,
+            'connection_request',
+            v_name || ' sent you a connection request.'
+        );
+
+    ELSIF TG_OP = 'UPDATE'
+          AND OLD.status = 'pending'
+          AND NEW.status = 'accepted' THEN
+
+        SELECT first_name || ' ' || last_name
+        INTO v_name
+        FROM users
+        WHERE user_id = NEW.receiver_id;
+
+        INSERT INTO notifications (user_id, type, content)
+        VALUES (
+            NEW.sender_id,
+            'connection_accepted',
+            v_name || ' accepted your connection request.'
+        );
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_connections_notify
+AFTER INSERT OR UPDATE OF status ON connections
+FOR EACH ROW
+EXECUTE FUNCTION fn_notify_connection();
+
+
+-- 5.2 Yeni layihə üzvü haqqında bildiriş
+CREATE FUNCTION fn_notify_new_member()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_name TEXT;
+    v_title TEXT;
+    v_captain INTEGER;
+BEGIN
+    SELECT first_name || ' ' || last_name
+    INTO v_name
+    FROM users
+    WHERE user_id = NEW.user_id;
+
+    SELECT title, captain_id
+    INTO v_title, v_captain
+    FROM projects
+    WHERE project_id = NEW.project_id;
+
+    INSERT INTO notifications (user_id, type, content)
+    VALUES (
+        v_captain,
+        'new_member',
+        v_name || ' joined your project "' || v_title || '".'
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_members_notify
+AFTER INSERT ON project_members
+FOR EACH ROW
+WHEN (NEW.member_role <> 'captain')
+EXECUTE FUNCTION fn_notify_new_member();
+
+
+-- 5.3 Layihənin statusu dəyişdikdə bildiriş
+CREATE FUNCTION fn_notify_status_change()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO notifications (user_id, type, content)
+    SELECT
+        pm.user_id,
+        'status_change',
+        format(
+            'Project "%s" changed status from %s to %s.',
+            NEW.title,
+            OLD.status,
+            NEW.status
+        )
+    FROM project_members pm
+    WHERE pm.project_id = NEW.project_id
+      AND pm.user_id <> NEW.captain_id;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_projects_notify_status
+AFTER UPDATE OF status ON projects
+FOR EACH ROW
+WHEN (OLD.status IS DISTINCT FROM NEW.status)
+EXECUTE FUNCTION fn_notify_status_change();
+
+
+-- 5.4 Yeni reytinq bildirişi
+CREATE FUNCTION fn_notify_new_rating()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_name TEXT;
+BEGIN
+    SELECT first_name || ' ' || last_name
+    INTO v_name
+    FROM users
+    WHERE user_id = NEW.rater_id;
+
+    INSERT INTO notifications (user_id, type, content)
+    VALUES (
+        NEW.rated_user_id,
+        'new_rating',
+        'You received a new rating from ' || v_name || '.'
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_ratings_notify
+AFTER INSERT ON ratings
+FOR EACH ROW
+EXECUTE FUNCTION fn_notify_new_rating();
+
+-- 6.1 İstifadəçinin orta reytinqi
+CREATE VIEW v_user_avg_rating AS
+SELECT u.user_id,
+       u.first_name,
+       u.last_name,
+       COUNT(r.rating_id) AS rating_count,
+       ROUND(AVG(r.overall_stars), 2) AS avg_overall,
+       ROUND(AVG(r.communication), 2) AS avg_communication,
+       ROUND(AVG(r.punctuality), 2) AS avg_punctuality,
+       ROUND(AVG(r.technical_skill), 2) AS avg_technical,
+       ROUND(AVG(r.teamwork), 2) AS avg_teamwork
+FROM users u
+LEFT JOIN ratings r ON r.rated_user_id = u.user_id
+GROUP BY u.user_id, u.first_name, u.last_name;
+
+
+-- 6.2 Showcase: tamamlanmış layihələr
+CREATE VIEW v_showcase AS
+SELECT p.project_id,
+       p.title,
+       p.description,
+       p.link,
+       c.first_name || ' ' || c.last_name AS captain_name,
+       (SELECT string_agg(u.first_name || ' ' || u.last_name, ', ' ORDER BY u.first_name)
+          FROM project_members pm
+          JOIN users u ON u.user_id = pm.user_id
+         WHERE pm.project_id = p.project_id) AS team_members,
+       (SELECT string_agg(s.skill_name, ', ' ORDER BY s.skill_name)
+          FROM project_skills ps
+          JOIN skills s ON s.skill_id = ps.skill_id
+         WHERE ps.project_id = p.project_id) AS skills,
+       (SELECT ROUND(AVG(pr.stars), 2)
+          FROM project_reviews pr
+         WHERE pr.project_id = p.project_id) AS avg_review
+FROM projects p
+JOIN users c ON c.user_id = p.captain_id
+WHERE p.status = 'done';
+
+COMMENT ON TABLE users
+IS 'Platform accounts: students and administrators';
+
+COMMENT ON TABLE skills
+IS 'Master list of selectable skills';
+
+COMMENT ON TABLE user_skills
+IS 'Which skills a user has (M:N)';
+
+COMMENT ON TABLE projects
+IS 'Projects posted by students (captain = creator)';
+
+COMMENT ON TABLE project_skills
+IS 'Skills a project has (have) or needs (need) (M:N)';
+
+COMMENT ON TABLE project_members
+IS 'Users participating in a project (M:N); also the source of Friends';
+
+COMMENT ON TABLE connections
+IS 'Connection requests between users; accepted = connection';
+
+COMMENT ON TABLE ratings
+IS 'Per-project ratings users give each other';
+
+COMMENT ON TABLE project_reviews
+IS 'Reviews written about projects';
+
+COMMENT ON TABLE notifications
+IS 'In-app notifications for users';
+
+
+-- 6.3 Eyni layihədə iştirak etmiş istifadəçilər
+CREATE VIEW v_friends AS
+SELECT DISTINCT a.user_id AS user_id_1,
+                b.user_id AS user_id_2
+FROM project_members a
+JOIN project_members b
+  ON a.project_id = b.project_id
+ AND a.user_id < b.user_id;
+
+
+-- 6.4 İstifadəçi və layihə arasında uyğunluq balı
+CREATE VIEW v_match_scores AS
+SELECT u.user_id,
+       p.project_id,
+       p.title,
+       COUNT(us.user_id) AS matched_skills,
+       COUNT(ps.skill_id) AS needed_skills,
+       ROUND(100.0 * COUNT(us.user_id) / COUNT(ps.skill_id), 0) AS match_score
+FROM users u
+CROSS JOIN projects p
+JOIN project_skills ps
+  ON ps.project_id = p.project_id AND ps.skill_type = 'need'
+LEFT JOIN user_skills us
+  ON us.user_id = u.user_id AND us.skill_id = ps.skill_id
+WHERE u.role = 'student'
+  AND u.is_blocked = FALSE
+  AND p.status = 'looking_for_team'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM project_members pm
+      WHERE pm.project_id = p.project_id
+        AND pm.user_id = u.user_id
+  )
+GROUP BY u.user_id, p.project_id, p.title;
+
+
+-- 6.5 Platformanın ümumi statistikası
+CREATE VIEW v_platform_stats AS
+SELECT (SELECT COUNT(*) FROM users) AS total_users,
+       (SELECT COUNT(*) FROM projects) AS total_projects,
+       (SELECT COUNT(*) FROM connections WHERE status = 'accepted') AS total_connections,
+       (SELECT COUNT(*) FROM ratings) AS total_ratings;
