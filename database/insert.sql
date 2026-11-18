@@ -205,3 +205,112 @@ VALUES
     4,
     'Good implementation and creative idea.'
 );
+
+
+-- ADDITIONAL USERS
+INSERT INTO users
+(first_name, last_name, email, password_hash, university, major, role)
+VALUES
+('Nigar', 'Mammadova', 'nigar@example.com', 'demo_hash_7',
+ 'Karabakh University', 'Computer Engineering', 'student'),
+
+('Amina', 'Hasanova', 'amina@example.com', 'demo_hash_8',
+ 'Karabakh University', 'Information Technology', 'student'),
+
+('Elvin', 'Aliyev', 'elvin@example.com', 'demo_hash_9',
+ 'Baku State University', 'Software Engineering', 'student'),
+
+('Tural', 'Huseynov', 'tural@example.com', 'demo_hash_10',
+ 'ADA University', 'Computer Science', 'student');
+
+-- ADDITIONAL SKILLS
+INSERT INTO skills (skill_name, category)
+VALUES
+('JavaScript', 'Programming'),
+('Robotics', 'Engineering');
+
+-- ADDITIONAL PROJECTS
+INSERT INTO projects
+(captain_id, title, description, status)
+VALUES
+((SELECT user_id FROM users WHERE email = 'nigar@example.com'),
+ 'AI Study Assistant', 'AI-based assistant for students.', 'looking_for_team'),
+
+((SELECT user_id FROM users WHERE email = 'amina@example.com'),
+ 'Health Monitoring System', 'A smart health monitoring platform.', 'looking_for_team'),
+
+((SELECT user_id FROM users WHERE email = 'elvin@example.com'),
+ 'Online Learning Platform', 'A platform for online education.', 'in_progress'),
+
+((SELECT user_id FROM users WHERE email = 'tural@example.com'),
+ 'Smart Home Automation', 'An IoT-based smart home system.', 'in_progress'),
+
+((SELECT user_id FROM users WHERE email = 'nigar@example.com'),
+ 'Traffic Sign Recognition', 'Computer vision system for traffic signs.', 'done'),
+
+((SELECT user_id FROM users WHERE email = 'amina@example.com'),
+ 'Weather Forecast App', 'Application for weather forecasting.', 'done'),
+
+((SELECT user_id FROM users WHERE email = 'elvin@example.com'),
+ 'Robotics Control System', 'Software for controlling autonomous robots.', 'looking_for_team');
+INSERT INTO project_skills (project_id, skill_id, skill_type)
+SELECT p.project_id, s.skill_id, v.skill_type
+FROM (VALUES
+    ('AI Study Assistant', 'Python', 'have'),
+    ('AI Study Assistant', 'Machine Learning', 'need'),
+    ('Health Monitoring System', 'Python', 'have'),
+    ('Health Monitoring System', 'Arduino', 'need'),
+    ('Online Learning Platform', 'React', 'have'),
+    ('Online Learning Platform', 'JavaScript', 'need'),
+    ('Smart Home Automation', 'Arduino', 'have'),
+    ('Smart Home Automation', 'C++', 'need'),
+    ('Traffic Sign Recognition', 'Python', 'have'),
+    ('Traffic Sign Recognition', 'Computer Vision', 'have'),
+    ('Weather Forecast App', 'JavaScript', 'have'),
+    ('Weather Forecast App', 'Python', 'need'),
+    ('Robotics Control System', 'Robotics', 'have'),
+    ('Robotics Control System', 'C++', 'have')
+) AS v(project_title, skill_name, skill_type)
+JOIN projects p ON p.title = v.project_title
+JOIN skills s ON s.skill_name = v.skill_name
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM project_skills ps
+    WHERE ps.project_id = p.project_id
+      AND ps.skill_id = s.skill_id
+);
+INSERT INTO ratings (
+    rater_id,
+    rated_user_id,
+    project_id,
+    overall_stars,
+    communication,
+    punctuality,
+    technical_skill,
+    teamwork,
+    comment
+)
+VALUES
+(2, 1, 2, 5, 5, 5, 5, 5, 'Excellent teamwork.'),
+(2, 1, 3, 4, 4, 5, 4, 4, 'Good collaboration.'),
+(3, 5, 1, 5, 5, 5, 5, 5, 'Very helpful team member.'),
+(3, 5, 3, 4, 4, 4, 5, 4, 'Great technical skills.'),
+(1, 4, 2, 5, 5, 5, 5, 5, 'Excellent communication.'),
+(1, 4, 4, 4, 4, 4, 5, 4, 'Good project contribution.'),
+(2, 7, 4, 5, 5, 5, 5, 5, 'Outstanding work.'),
+(7, 9, 6, 4, 4, 5, 4, 4, 'Good teamwork.');
+INSERT INTO project_reviews (
+    project_id,
+    reviewer_id,
+    stars,
+    comment
+)
+VALUES
+(1, 4, 5, 'A useful and well-organized project.'),
+(1, 5, 4, 'Interesting project with good results.'),
+(2, 3, 5, 'The project has great potential.'),
+(2, 4, 4, 'Good idea and implementation.'),
+(3, 1, 5, 'Excellent robotics project.'),
+(4, 2, 4, 'A creative and useful project.'),
+(5, 6, 5, 'Impressive project and presentation.'),
+(6, 10, 4, 'Good work and practical solution.');
