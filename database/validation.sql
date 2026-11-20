@@ -1,6 +1,3 @@
--- ORBYT - DATABASE VALIDATION
--- Milestone 3
-
 -- 1. DATABASE AND SCHEMA CHECK
 SELECT
     current_database() AS database_name,
